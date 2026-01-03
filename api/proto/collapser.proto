@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package collapser.v1;
 
-option go_package = "github.com/VarunGitGood/collapser-grpc/api/proto/v1";
+option go_package = "github.com/VarunGitGood/collapser-grpc/api/proto";
 
 // CollapserService provides the gRPC interface for the request collapsing sidecar
 service CollapserService {
