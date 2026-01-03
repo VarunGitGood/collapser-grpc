@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package collapser.v1;
+
+option go_package = "github.com/VarunGitGood/collapser-grpc/api/proto/v1";
+
+// CollapserService provides the gRPC interface for the request collapsing sidecar
+service CollapserService {
+  // Forward forwards a request to the backend, collapsing identical in-flight requests
+  rpc Forward(ForwardRequest) returns (ForwardResponse);
+  
+  // Health checks the health status of the collapser service
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// ForwardRequest represents a request to be forwarded to the backend
+message ForwardRequest {
+  // key is used to identify identical requests
+  string key = 1;
+  
+  // payload contains the actual request data
+  bytes payload = 2;
+  
+  // metadata contains additional request metadata
+  map<string, string> metadata = 3;
+}
+
+// ForwardResponse represents the response from the backend
+message ForwardResponse {
+  // payload contains the response data
+  bytes payload = 1;
+  
+  // metadata contains response metadata
+  map<string, string> metadata = 2;
+  
+  // collapsed indicates if this response was served from a collapsed request
+  bool collapsed = 3;
+}
+
+// HealthRequest is a request for health check
+message HealthRequest {}
+
+// HealthResponse indicates the health status
+message HealthResponse {
+  // status indicates if the service is healthy
+  bool healthy = 1;
+  
+  // message provides additional health information
+  string message = 2;
+}
