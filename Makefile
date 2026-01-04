@@ -3,7 +3,7 @@
 # Variables
 BINARY_NAME=collapser
 BUILD_DIR=bin
-MAIN_PATH=./cmd/collapser
+MAIN_PATH=./cmd/main.go
 
 # Default target
 help: ## Display this help screen
