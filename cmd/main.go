@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 
 	"github.com/VarunGitGood/collapser-grpc/internal/collapser"
 	"github.com/VarunGitGood/collapser-grpc/internal/config"
 	"github.com/VarunGitGood/collapser-grpc/internal/proxy"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 )
 
@@ -20,6 +22,12 @@ func main() {
 		os.Exit(1)
 	}
 	log.Printf("Configuration loaded: %+v\n", cfg)
+
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Println("Metrics server on http://localhost:2112/metrics")
+		http.ListenAndServe(":2112", nil)
+	}()
 
 	collapserInstance := collapser.NewCollapser(cfg.CollapseWindow)
 	collapserInstance.Start()

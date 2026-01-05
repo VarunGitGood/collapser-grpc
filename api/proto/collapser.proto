@@ -1,7 +1,0 @@
-syntax = "proto3";
-
-package collapser.v1;
-
-option go_package = "github.com/VarunGitGood/collapser-grpc/api/proto";
-
-
