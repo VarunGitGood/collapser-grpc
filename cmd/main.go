@@ -22,6 +22,8 @@ func main() {
 	log.Printf("Configuration loaded: %+v\n", cfg)
 
 	collapserInstance := collapser.NewCollapser(cfg.CollapseWindow)
+	collapserInstance.Start()
+	defer collapserInstance.Stop()
 	proxyHandler := proxy.NewHandler(cfg.BackendAddress, collapserInstance)
 	grpcServer := grpc.NewServer(
 		grpc.UnknownServiceHandler(proxyHandler.Handle),

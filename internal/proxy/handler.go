@@ -30,14 +30,13 @@ func NewHandler(backendAddr string, collapserInstance *collapser.Collapser) *Han
 		collapserInstance: collapserInstance,
 	}
 }
-
+// TODO: handle streaming interceptor cases, only unary is supported for now
 func (h *Handler) Handle(srv interface{}, stream grpc.ServerStream) error {
 	method, ok := grpc.MethodFromServerStream(stream)
 	if !ok {
 		return status.Errorf(codes.Internal, "cannot extract method")
 	}
 
-	// TODO: handle streaming interceptor cases currently only unary is supported
 	in := &RawMessage{}
 	if err := stream.RecvMsg(in); err != nil {
 		if err == io.EOF {
