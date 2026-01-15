@@ -2,8 +2,8 @@ package config
 
 import (
 	"os"
-	"time"
 	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -52,4 +52,4 @@ func getEnvAsDuration(name string, defaultVal time.Duration) time.Duration {
 		}
 	}
 	return defaultVal
-}	
+}

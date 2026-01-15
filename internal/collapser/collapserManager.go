@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pq "github.com/VarunGitGood/collapser-grpc/internal/expiryHeap"
@@ -61,7 +62,7 @@ type leaderRequest struct {
 	ctx       context.Context
 	fn        func(context.Context) ([]byte, error)
 	followers []chan result
-	executing bool
+	executing atomic.Bool
 	createdAt time.Time
 	expiresAt time.Time
 }
@@ -85,11 +86,18 @@ func NewCollapser(collapseWindow time.Duration) *Collapser {
 
 func closeFollowers(followers []chan result, res result) {
 	for _, follower := range followers {
-		select {
-		case follower <- res:
-		default:
-		}
-		close(follower)
+		func(ch chan result) {
+			defer func() {
+				if r := recover(); r != nil {
+					// Channel already closed, ignore
+				}
+			}()
+			select {
+			case ch <- res:
+			default:
+			}
+			close(ch)
+		}(follower)
 	}
 }
 
@@ -122,18 +130,25 @@ func (c *Collapser) SendToLeader(ctx context.Context, key string, fn func(contex
 	c.mu.Lock()
 	leader, exists := c.inflightRequests[key]
 
-	if exists && !leader.executing {
-		collapsedRequestsTotal.Inc()
-		resultCh := make(chan result, 1)
-		leader.followers = append(leader.followers, resultCh)
-		c.mu.Unlock()
+	if exists && !leader.executing.Load() {
+		elapsed := time.Since(leader.createdAt)
+		if elapsed < c.collapseWindow {
+			collapsedRequestsTotal.Inc()
+			resultCh := make(chan result, 1)
+			leader.followers = append(leader.followers, resultCh)
+			c.mu.Unlock()
 
-		select {
-		case res := <-resultCh:
-			return res.data, res.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
+			select {
+			case res := <-resultCh:
+				return res.data, res.err
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
+	}
+
+	if exists && leader.executing.Load() {
+		key = key + fmt.Sprintf("-%d", time.Now().UnixNano())
 	}
 
 	backendCallsTotal.Inc()
@@ -143,7 +158,6 @@ func (c *Collapser) SendToLeader(ctx context.Context, key string, fn func(contex
 		ctx:       ctx,
 		fn:        fn,
 		followers: []chan result{resultCh},
-		executing: false,
 		createdAt: time.Now(),
 		expiresAt: expiresAt,
 	}
@@ -186,7 +200,11 @@ func (c *Collapser) executeAsLeader(key string) ([]byte, error) {
 		return nil, fmt.Errorf("leader request not found")
 	}
 
-	leader.executing = true
+	if !leader.executing.CompareAndSwap(false, true) {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("already executing")
+	}
+
 	followers := leader.followers
 	fn := leader.fn
 	ctx := leader.ctx
@@ -194,8 +212,8 @@ func (c *Collapser) executeAsLeader(key string) ([]byte, error) {
 
 	data, err := fn(ctx)
 	res := result{data: data, err: err}
-	closeFollowers(followers, res)
 
+	closeFollowers(followers, res)
 	if len(followers) > 0 {
 		collapseRatio.Set(float64(len(followers)))
 	}
@@ -237,7 +255,7 @@ func (c *Collapser) Cleanup() {
 
 		heap.Pop(c.expiryHeap)
 		leader, exists := c.inflightRequests[item.Key]
-		if !exists || leader.executing {
+		if !exists || leader.executing.Load() {
 			continue
 		}
 

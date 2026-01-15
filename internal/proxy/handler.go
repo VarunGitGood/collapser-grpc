@@ -20,6 +20,7 @@ type Handler struct {
 type RawMessage struct {
 	Data []byte
 }
+
 func (m *RawMessage) Reset()         { m.Data = nil }
 func (m *RawMessage) String() string { return string(m.Data) }
 func (m *RawMessage) ProtoMessage()  {}
@@ -30,6 +31,7 @@ func NewHandler(backendAddr string, collapserInstance *collapser.Collapser) *Han
 		collapserInstance: collapserInstance,
 	}
 }
+
 // TODO: handle streaming interceptor cases, only unary is supported for now
 func (h *Handler) Handle(srv interface{}, stream grpc.ServerStream) error {
 	method, ok := grpc.MethodFromServerStream(stream)

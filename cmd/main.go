@@ -39,7 +39,7 @@ func main() {
 
 	lis, err := net.Listen("tcp", cfg.GRPCPort)
 	if err != nil {
-		log.Fatalf("Failed to listen on port %d: %v", cfg.GRPCPort, err)
+		log.Fatalf("Failed to listen on port %s: %v", cfg.GRPCPort, err)
 	}
 	defer lis.Close()
 

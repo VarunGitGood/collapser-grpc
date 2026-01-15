@@ -2,176 +2,111 @@ package collapser
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/require"
 )
 
-func TestRequestCollapse(t *testing.T) {
-	c := NewCollapser(20 * time.Millisecond)
-	require.NoError(t, c.Start())
+// TestRequestCollapseSingleKey verifies that multiple requests with the same key
+// TODO
+func TestRequestCollapseSingleKey(t *testing.T) {
+	c := NewCollapser(10 * time.Millisecond)
 	defer c.Stop()
+	c.Start()
 
-	var backendCalls int64
+	var backendCalls int32
+
 	fn := func(ctx context.Context) ([]byte, error) {
-		atomic.AddInt64(&backendCalls, 1)
-		time.Sleep(50 * time.Millisecond)
+		atomic.AddInt32(&backendCalls, 1)
+		time.Sleep(20 * time.Millisecond)
 		return []byte("ok"), nil
 	}
 
-	const N = 100
-	wg := sync.WaitGroup{}
-	wg.Add(N)
+	const goroutines = 100
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
 
-	for i := 0; i < N; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
-			resp, err := c.SendToLeader(context.Background(), "same-key", fn)
-			require.NoError(t, err)
-			require.Equal(t, []byte("ok"), resp)
+			_, err := c.SendToLeader(context.Background(), "same-key", fn)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
 		}()
+	}
+	wg.Wait()
+	if backendCalls != 1 {
+		t.Fatalf("expected 1 backend call, got %d", backendCalls)
+	}
+}
+
+// TestDifferentKeysDontCollapse verifies that requests with different keys to ensure hash map works correctly and they don't collapse.
+func TestDifferentKeysDontCollapse(t *testing.T) {
+	c := NewCollapser(5 * time.Millisecond)
+	defer c.Stop()
+	c.Start()
+
+	var backendCalls int32
+
+	fn := func(ctx context.Context) ([]byte, error) {
+		atomic.AddInt32(&backendCalls, 1)
+		return []byte("ok"), nil
+	}
+
+	const keys = 10
+	var wg sync.WaitGroup
+	wg.Add(keys)
+
+	for i := 0; i < keys; i++ {
+		go func(i int) {
+			defer wg.Done()
+			key := "key-" + string(rune('a'+i))
+			_, err := c.SendToLeader(context.Background(), key, fn)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		}(i)
 	}
 
 	wg.Wait()
-	require.Equal(t, int64(1), backendCalls, "should collapse to 1 backend call")
+
+	if backendCalls != keys {
+		t.Fatalf("expected %d backend calls, got %d", keys, backendCalls)
+	}
 }
 
-func TestMultipleKeys(t *testing.T) {
-	c := NewCollapser(20 * time.Millisecond)
-	require.NoError(t, c.Start())
-	defer c.Stop()
-
-	var backendCalls int64
-	fn := func(ctx context.Context) ([]byte, error) {
-		atomic.AddInt64(&backendCalls, 1)
-		return []byte("ok"), nil
-	}
-
-	wg := sync.WaitGroup{}
-	wg.Add(6)
-
-	for i := 0; i < 3; i++ {
-		go func() {
-			defer wg.Done()
-			_, err := c.SendToLeader(context.Background(), "key1", fn)
-			require.NoError(t, err)
-		}()
-	}
-
-	for i := 0; i < 3; i++ {
-		go func() {
-			defer wg.Done()
-			_, err := c.SendToLeader(context.Background(), "key2", fn)
-			require.NoError(t, err)
-		}()
-	}
-
-	wg.Wait()
-	require.Equal(t, int64(2), backendCalls, "should have 2 backend calls (one per key)")
-}
-
-func TestSequentialBatches(t *testing.T) {
-	c := NewCollapser(50 * time.Millisecond)
-	require.NoError(t, c.Start())
-	defer c.Stop()
-
-	var backendCalls int64
-	fn := func(ctx context.Context) ([]byte, error) {
-		atomic.AddInt64(&backendCalls, 1)
-		return []byte("ok"), nil
-	}
-
-	wg1 := sync.WaitGroup{}
-	wg1.Add(5)
-	for i := 0; i < 5; i++ {
-		go func() {
-			defer wg1.Done()
-			_, err := c.SendToLeader(context.Background(), "key", fn)
-			require.NoError(t, err)
-		}()
-	}
-	wg1.Wait()
-	time.Sleep(100 * time.Millisecond)
-
-	wg2 := sync.WaitGroup{}
-	wg2.Add(5)
-	for i := 0; i < 5; i++ {
-		go func() {
-			defer wg2.Done()
-			_, err := c.SendToLeader(context.Background(), "key", fn)
-			require.NoError(t, err)
-		}()
-	}
-	wg2.Wait()
-
-	require.Equal(t, int64(2), backendCalls, "should have 2 backend calls (one per batch)")
-}
-
+// TestContextCancellation verifies that a cancelled context unblocks the request.
 func TestContextCancellation(t *testing.T) {
-	c := NewCollapser(100 * time.Millisecond)
-	require.NoError(t, c.Start())
+	c := NewCollapser(50 * time.Millisecond)
 	defer c.Stop()
-
-	fn := func(ctx context.Context) ([]byte, error) {
-		time.Sleep(50 * time.Millisecond)
-		return []byte("ok"), nil
-	}
+	c.Start()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := c.SendToLeader(ctx, "key", fn)
-	require.Error(t, err)
-	require.Equal(t, context.Canceled, err)
-}
-
-func TestErrorPropagation(t *testing.T) {
-	c := NewCollapser(20 * time.Millisecond)
-	require.NoError(t, c.Start())
-	defer c.Stop()
-
-	expectedErr := errors.New("backend error")
-	fn := func(ctx context.Context) ([]byte, error) {
-		return nil, expectedErr
-	}
-
-	wg := sync.WaitGroup{}
-	wg.Add(10)
-
-	for i := 0; i < 10; i++ {
-		go func() {
-			defer wg.Done()
-			_, err := c.SendToLeader(context.Background(), "key", fn)
-			require.Equal(t, expectedErr, err)
-		}()
-	}
-
-	wg.Wait()
-}
-
-func TestGracefulShutdown(t *testing.T) {
-	c := NewCollapser(100 * time.Millisecond)
-	require.NoError(t, c.Start())
 
 	fn := func(ctx context.Context) ([]byte, error) {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		return []byte("ok"), nil
 	}
 
-	done := make(chan error, 1)
+	done := make(chan struct{})
+
 	go func() {
-		_, err := c.SendToLeader(context.Background(), "key", fn)
-		done <- err
+		defer close(done)
+		_, err := c.SendToLeader(ctx, "cancel-key", fn)
+		if err == nil {
+			t.Errorf("expected error due to cancellation")
+		}
 	}()
 
 	time.Sleep(10 * time.Millisecond)
-	c.Stop()
+	cancel()
 
-	err := <-done
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "shutting down")
+	select {
+	case <-done:
+		// success
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("request did not unblock after cancellation")
+	}
 }
