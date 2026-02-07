@@ -1,53 +1,49 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"os"
+	"time"
 
 	"github.com/VarunGitGood/collapser-grpc/internal/collapser"
-	"github.com/VarunGitGood/collapser-grpc/internal/config"
 	"github.com/VarunGitGood/collapser-grpc/internal/proxy"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 )
 
 func main() {
-	fmt.Println("Collapser gRPC Sidecar")
-	cfg := config.Load()
-	if cfg == nil {
-		log.Println("Failed to load configuration")
-		os.Exit(1)
-	}
-	log.Printf("Configuration loaded: %+v\n", cfg)
-
+	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		log.Println("Metrics server on http://localhost:2112/metrics")
-		http.ListenAndServe(":2112", nil)
-	}()
-
-	collapserInstance := collapser.NewCollapser(cfg.CollapseWindow)
-	collapserInstance.Start()
-	defer collapserInstance.Stop()
-	proxyHandler := proxy.NewHandler(cfg.BackendAddress, collapserInstance)
-	grpcServer := grpc.NewServer(
-		grpc.UnknownServiceHandler(proxyHandler.Handle),
-	)
-
-	lis, err := net.Listen("tcp", cfg.GRPCPort)
-	if err != nil {
-		log.Fatalf("Failed to listen on port %s: %v", cfg.GRPCPort, err)
-	}
-	defer lis.Close()
-
-	go func() {
-		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("Failed to serve gRPC server: %v", err)
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			log.Fatalf("Metrics server failed: %v", err)
 		}
 	}()
-	defer grpcServer.GracefulStop()
-	log.Println("Collapser is ready")
+
+	config := collapser.Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	}
+	c := collapser.NewCollapserWithConfig(config)
+	if err := c.Start(); err != nil {
+		log.Fatalf("Failed to start collapser: %v", err)
+	}
+	defer c.Stop()
+	log.Println("🔄 Envoy-style collapser started")
+	log.Printf("   Result cache: %v", config.ResultCacheDuration)
+	log.Printf("   Backend timeout: %v", config.BackendTimeout)
+	handler := proxy.NewHandler("localhost:50051", c)
+	lis, err := net.Listen("tcp", ":50052")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+	s := grpc.NewServer(
+		grpc.UnknownServiceHandler(handler.Handle),
+	)
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve: %v", err)
+	}
 }

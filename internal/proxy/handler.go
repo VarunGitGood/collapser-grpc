@@ -13,26 +13,17 @@ import (
 )
 
 type Handler struct {
-	backendAddr       string
-	collapserInstance *collapser.Collapser
+	backendAddr string
+	collapser   *collapser.Collapser
 }
 
-type RawMessage struct {
-	Data []byte
-}
-
-func (m *RawMessage) Reset()         { m.Data = nil }
-func (m *RawMessage) String() string { return string(m.Data) }
-func (m *RawMessage) ProtoMessage()  {}
-
-func NewHandler(backendAddr string, collapserInstance *collapser.Collapser) *Handler {
+func NewHandler(backendAddr string, c *collapser.Collapser) *Handler {
 	return &Handler{
-		backendAddr:       backendAddr,
-		collapserInstance: collapserInstance,
+		backendAddr: backendAddr,
+		collapser:   c,
 	}
 }
 
-// TODO: handle streaming interceptor cases, only unary is supported for now
 func (h *Handler) Handle(srv interface{}, stream grpc.ServerStream) error {
 	method, ok := grpc.MethodFromServerStream(stream)
 	if !ok {
@@ -46,14 +37,15 @@ func (h *Handler) Handle(srv interface{}, stream grpc.ServerStream) error {
 		}
 		return err
 	}
-
 	key := h.generateKey(method, in.Data)
-	resp, err := h.collapserInstance.SendToLeader(stream.Context(), key, func(ctx context.Context) ([]byte, error) {
+	resp, err := h.collapser.Execute(stream.Context(), key, func(ctx context.Context) ([]byte, error) {
 		return Forward(ctx, h.backendAddr, method, in.Data)
 	})
+
 	if err != nil {
 		return err
 	}
+
 	return stream.SendMsg(&RawMessage{Data: resp})
 }
 
@@ -61,3 +53,11 @@ func (h *Handler) generateKey(method string, data []byte) string {
 	hash := sha256.Sum256(data)
 	return method + ":" + hex.EncodeToString(hash[:])
 }
+
+type RawMessage struct {
+	Data []byte
+}
+
+func (m *RawMessage) Reset()         { m.Data = nil }
+func (m *RawMessage) String() string { return string(m.Data) }
+func (m *RawMessage) ProtoMessage()  {}

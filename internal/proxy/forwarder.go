@@ -10,16 +10,18 @@ import (
 func Forward(ctx context.Context, backendAddr, method string, req []byte) ([]byte, error) {
 	conn, err := grpc.NewClient(
 		backendAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO: Use secure credentials in production
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
+
 	var resp []byte
 	err = conn.Invoke(ctx, method, req, &resp)
 	if err != nil {
 		return nil, err
 	}
+
 	return resp, nil
 }

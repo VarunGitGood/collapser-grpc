@@ -1,69 +1,62 @@
 package collapser
 
 import (
-	"container/heap"
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	pq "github.com/VarunGitGood/collapser-grpc/internal/expiryHeap"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
+	prom "github.com/VarunGitGood/collapser-grpc/internal/metrics"
 )
 
-var (
-	requestsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "collapser_requests_total",
-		Help: "Total number of requests received",
-	})
+type State int32
 
-	collapsedRequestsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "collapser_collapsed_requests_total",
-		Help: "Total number of requests that were collapsed (followers)",
-	})
-
-	backendCallsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "collapser_backend_calls_total",
-		Help: "Total number of actual backend calls made (leaders)",
-	})
-
-	inflightRequests = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "collapser_inflight_requests",
-		Help: "Current number of inflight request groups",
-	})
-
-	collapseRatio = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "collapser_collapse_ratio",
-		Help: "Current collapse ratio (followers per leader)",
-	})
+const (
+	StateExecuting State = 0 // backend is running
+	StateDone      State = 1 // backend result available
 )
 
-type Request struct {
-	key          string
-	payload      []byte
-	response     chan []byte
-	errorChannel chan error
-	done         chan struct{}
-	createdAt    time.Time
+type Config struct {
+	// How long to cache results after execution
+	ResultCacheDuration time.Duration
+	// Backend timeout (independent of client timeouts)
+	BackendTimeout time.Duration
+	// Cleanup interval for expired cache entries
+	CleanupInterval time.Duration
+}
+
+func DefaultConfig() Config {
+	return Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	}
 }
 
 type Collapser struct {
-	mu               sync.Mutex
-	inflightRequests map[string]*leaderRequest
-	expiryHeap       *pq.ExpiryHeap
-	collapseWindow   time.Duration
-	stopCh           chan struct{}
-	wg               sync.WaitGroup
+	mu     sync.RWMutex
+	config Config
+
+	inflight map[string]*inflightCall
+	cache    map[string]*cachedResult
+
+	stopCh chan struct{}
+	wg     sync.WaitGroup
 }
 
-type leaderRequest struct {
-	ctx       context.Context
-	fn        func(context.Context) ([]byte, error)
-	followers []chan result
-	executing atomic.Bool
+type inflightCall struct {
+	state     atomic.Int32
+	waiters   []chan result
+	result    *result
 	createdAt time.Time
+	mu        sync.Mutex
+}
+
+type cachedResult struct {
+	data      []byte
+	err       error
 	expiresAt time.Time
 }
 
@@ -72,32 +65,16 @@ type result struct {
 	err  error
 }
 
-func NewCollapser(collapseWindow time.Duration) *Collapser {
-	h := &pq.ExpiryHeap{}
-	heap.Init(h)
-
-	return &Collapser{
-		inflightRequests: make(map[string]*leaderRequest),
-		expiryHeap:       h,
-		collapseWindow:   collapseWindow,
-		stopCh:           make(chan struct{}),
-	}
+func NewCollapser() *Collapser {
+	return NewCollapserWithConfig(DefaultConfig())
 }
 
-func closeFollowers(followers []chan result, res result) {
-	for _, follower := range followers {
-		func(ch chan result) {
-			defer func() {
-				if r := recover(); r != nil {
-					// Channel already closed, ignore
-				}
-			}()
-			select {
-			case ch <- res:
-			default:
-			}
-			close(ch)
-		}(follower)
+func NewCollapserWithConfig(config Config) *Collapser {
+	return &Collapser{
+		config:   config,
+		inflight: make(map[string]*inflightCall),
+		cache:    make(map[string]*cachedResult),
+		stopCh:   make(chan struct{}),
 	}
 }
 
@@ -110,158 +87,150 @@ func (c *Collapser) Start() error {
 func (c *Collapser) Stop() error {
 	close(c.stopCh)
 	c.wg.Wait()
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	for key, leader := range c.inflightRequests {
-		res := result{err: fmt.Errorf("collapser shutting down")}
-		closeFollowers(leader.followers, res)
-		delete(c.inflightRequests, key)
+	for key, call := range c.inflight {
+		c.notifyWaiters(call, result{
+			err: fmt.Errorf("collapser shutting down"),
+		})
+		delete(c.inflight, key)
 	}
-
-	inflightRequests.Set(0)
+	c.cache = make(map[string]*cachedResult)
+	prom.InflightRequests.Set(0)
+	prom.CachedResults.Set(0)
 	return nil
 }
 
-func (c *Collapser) SendToLeader(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, error) {
-	requestsTotal.Inc()
+func (c *Collapser) Execute(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, error) {
+	prom.RequestsTotal.Inc()
+
+	c.mu.RLock()
+	if cached, exists := c.cache[key]; exists {
+		if time.Now().Before(cached.expiresAt) {
+			c.mu.RUnlock()
+			prom.CacheHitsTotal.Inc()
+			return cached.data, cached.err
+		}
+	}
+	c.mu.RUnlock()
 
 	c.mu.Lock()
-	leader, exists := c.inflightRequests[key]
+	call, exists := c.inflight[key]
+	if exists {
+		prom.CollapsedRequestsTotal.Inc()
+		waiterCh := make(chan result, 1)
 
-	if exists && !leader.executing.Load() {
-		elapsed := time.Since(leader.createdAt)
-		if elapsed < c.collapseWindow {
-			collapsedRequestsTotal.Inc()
-			resultCh := make(chan result, 1)
-			leader.followers = append(leader.followers, resultCh)
+		call.mu.Lock()
+		state := State(call.state.Load())
+		if state == StateDone {
+			res := *call.result
+			call.mu.Unlock()
 			c.mu.Unlock()
+			return res.data, res.err
+		}
+		call.waiters = append(call.waiters, waiterCh)
+		call.mu.Unlock()
+		c.mu.Unlock()
 
-			select {
-			case res := <-resultCh:
-				return res.data, res.err
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+		select {
+		case res := <-waiterCh:
+			return res.data, res.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
 
-	if exists && leader.executing.Load() {
-		key = key + fmt.Sprintf("-%d", time.Now().UnixNano())
-	}
-
-	backendCallsTotal.Inc()
-	resultCh := make(chan result, 1)
-	expiresAt := time.Now().Add(c.collapseWindow * 10)
-	leader = &leaderRequest{
-		ctx:       ctx,
-		fn:        fn,
-		followers: []chan result{resultCh},
+	prom.BackendCallsTotal.Inc()
+	call = &inflightCall{
+		waiters:   []chan result{},
 		createdAt: time.Now(),
-		expiresAt: expiresAt,
 	}
-	c.inflightRequests[key] = leader
+	call.state.Store(int32(StateExecuting))
 
-	heap.Push(c.expiryHeap, &pq.ExpiryItem{
-		Key:       key,
-		ExpiresAt: expiresAt,
-	})
-
-	inflightRequests.Inc()
+	c.inflight[key] = call
+	prom.InflightRequests.Inc()
 	c.mu.Unlock()
 
-	timer := time.NewTimer(c.collapseWindow)
-	defer timer.Stop()
+	// keeping the backend context separate to enforce backend timeout for now
+	backendCtx, cancel := context.WithTimeout(
+		context.Background(),
+		c.config.BackendTimeout,
+	)
 
-	select {
-	case <-timer.C:
-		return c.executeAsLeader(key)
-	case <-ctx.Done():
-		c.mu.Lock()
-		delete(c.inflightRequests, key)
-		inflightRequests.Dec()
-		c.mu.Unlock()
-		return nil, ctx.Err()
-	case <-c.stopCh:
-		c.mu.Lock()
-		delete(c.inflightRequests, key)
-		inflightRequests.Dec()
-		c.mu.Unlock()
-		return nil, fmt.Errorf("collapser stopped")
-	}
-}
+	defer cancel()
 
-func (c *Collapser) executeAsLeader(key string) ([]byte, error) {
-	c.mu.Lock()
-	leader, exists := c.inflightRequests[key]
-	if !exists {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("leader request not found")
-	}
+	start := time.Now()
+	data, err := fn(backendCtx)
+	prom.BackendLatency.Observe(time.Since(start).Seconds())
 
-	if !leader.executing.CompareAndSwap(false, true) {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("already executing")
-	}
-
-	followers := leader.followers
-	fn := leader.fn
-	ctx := leader.ctx
-	c.mu.Unlock()
-
-	data, err := fn(ctx)
 	res := result{data: data, err: err}
 
-	closeFollowers(followers, res)
-	if len(followers) > 0 {
-		collapseRatio.Set(float64(len(followers)))
-	}
+	call.mu.Lock()
+	call.result = &res
+	call.state.Store(int32(StateDone))
+	call.waiters = nil
+	call.mu.Unlock()
+	c.notifyWaiters(call, res)
 
 	c.mu.Lock()
-	delete(c.inflightRequests, key)
-	inflightRequests.Dec()
+	delete(c.inflight, key)
+	prom.InflightRequests.Dec()
+	c.cache[key] = &cachedResult{
+		data:      data,
+		err:       err,
+		expiresAt: time.Now().Add(c.config.ResultCacheDuration),
+	}
+	prom.CachedResults.Inc()
 	c.mu.Unlock()
 
 	return data, err
 }
 
+func (c *Collapser) notifyWaiters(call *inflightCall, res result) {
+	for _, waiterCh := range call.waiters {
+		func(ch chan result) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("Warning: panic while notifying waiter: %v", r)
+				}
+			}()
+
+			select {
+			case ch <- res:
+				// sent
+			default:
+				// Channel full or receiver gone
+			}
+			close(ch)
+		}(waiterCh)
+	}
+}
+
 func (c *Collapser) cleanupLoop() {
 	defer c.wg.Done()
 
-	ticker := time.NewTicker(c.collapseWindow)
+	ticker := time.NewTicker(c.config.CleanupInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			c.Cleanup()
+			c.cleanup()
 		case <-c.stopCh:
 			return
 		}
 	}
 }
 
-func (c *Collapser) Cleanup() {
+func (c *Collapser) cleanup() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	now := time.Now()
-
-	for c.expiryHeap.Len() > 0 {
-		item := (*c.expiryHeap)[0]
-		if item.ExpiresAt.After(now) {
-			break
+	for key, cached := range c.cache {
+		if now.After(cached.expiresAt) {
+			delete(c.cache, key)
+			prom.CachedResults.Dec()
 		}
-
-		heap.Pop(c.expiryHeap)
-		leader, exists := c.inflightRequests[item.Key]
-		if !exists || leader.executing.Load() {
-			continue
-		}
-
-		res := result{err: fmt.Errorf("request timeout during collapse window")}
-		closeFollowers(leader.followers, res)
-		delete(c.inflightRequests, item.Key)
-		inflightRequests.Dec()
 	}
 }
