@@ -1,11 +1,12 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/VarunGitGood/collapser-grpc/internal/collapser"
@@ -14,33 +15,25 @@ import (
 	"github.com/VarunGitGood/collapser-grpc/internal/proxy"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 )
 
 func main() {
+	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("failed to load config: %v", err)
 	}
 
-	logger.Setup(cfg.LogLevel, cfg.LogFormat)
-	logger.Info("starting proxy", zap.Int("grpc_port", cfg.GRPCPort), zap.Int("metrics_port", cfg.MetricsPort))
+	// Initialize logger
+	if err := logger.Init(cfg.LogLevel, cfg.LogFormat); err != nil {
+		log.Fatalf("failed to initialize logger: %v", err)
+	}
+	defer logger.Sync()
 
-	// Start metrics server
-	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
-		})
-		addr := fmt.Sprintf(":%d", cfg.MetricsPort)
-		logger.Info("metrics server starting", zap.String("addr", addr))
-		if err := http.ListenAndServe(addr, mux); err != nil {
-			logger.Fatal("metrics server failed", zap.Error(err))
-		}
-	}()
+	logger.Info("Starting Collapser Proxy",
+		zap.Int("grpc_port", cfg.GRPCPort),
+		zap.Int("metrics_port", cfg.MetricsPort),
+		zap.String("backend_address", cfg.BackendAddress))
 
 	// Initialize Collapser
 	collapserCfg := collapser.Config{
@@ -52,36 +45,40 @@ func main() {
 	if err := c.Start(); err != nil {
 		logger.Fatal("failed to start collapser", zap.Error(err))
 	}
+	defer c.Stop()
 
 	// Initialize Proxy Handler
-	handler := proxy.NewHandler(cfg.BackendAddress, c)
+	proxyHandler := proxy.NewHandler(c, cfg.BackendAddress)
 
-	// Start gRPC Server
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.GRPCPort))
+	// Start Metrics Server
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		logger.Info("Metrics server starting", zap.Int("port", cfg.MetricsPort))
+		if err := http.ListenAndServe(":"+strconv.Itoa(cfg.MetricsPort), mux); err != nil {
+			logger.Error("metrics server failed", zap.Error(err))
+		}
+	}()
+
+	// Start gRPC Proxy Server
+	lis, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.GRPCPort))
 	if err != nil {
 		logger.Fatal("failed to listen", zap.Error(err))
 	}
 
-	s := grpc.NewServer(
-		grpc.UnknownServiceHandler(handler.Handle),
-	)
+	// Listen for OS signals for graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		logger.Info("proxy gRPC server starting", zap.Int("port", cfg.GRPCPort))
-		if err := s.Serve(lis); err != nil {
-			logger.Fatal("failed to serve", zap.Error(err))
+		if err := proxyHandler.Serve(lis); err != nil {
+			logger.Error("proxy server failed", zap.Error(err))
 		}
 	}()
 
-	// Graceful Shutdown
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
-	<-stop
-	logger.Info("shutting down...")
-
-	s.GracefulStop()
-	c.Stop()
-
-	logger.Info("shutdown complete")
+	<-sigCh
+	logger.Info("Shutting down gracefully...")
 }

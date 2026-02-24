@@ -12,7 +12,7 @@ func init() {
 	Log, _ = zap.NewProduction()
 }
 
-func Setup(level, format string) {
+func Init(level, format string) error {
 	var config zap.Config
 	if format == "json" {
 		config = zap.NewProductionConfig()
@@ -29,8 +29,13 @@ func Setup(level, format string) {
 	var err error
 	Log, err = config.Build()
 	if err != nil {
-		panic(err)
+		return err
 	}
+	return nil
+}
+
+func Sync() {
+	_ = Log.Sync()
 }
 
 func Info(msg string, fields ...zap.Field) {

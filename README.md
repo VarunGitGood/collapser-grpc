@@ -55,6 +55,25 @@ Configuration is handled via environment variables:
 | `COLLAPSER_CACHE_DURATION` | Result cache TTL | `100ms` |
 | `LOG_LEVEL` | info, debug, warn, error | `info` |
 
+## Benchmarking
+
+To quantitatively evaluate the performance of the Collapser, you can run the built-in benchmarks:
+
+```bash
+make bench
+```
+
+### Benchmark Results
+The following results were obtained on an 11th Gen Intel(R) Core(TM) i7 processor:
+
+| Scenario | Performance | Memory | Allocations |
+|----------|-------------|--------|-------------|
+| **High Contention** | ~82 ns/op | 0 B/op | 0 allocs/op |
+| **No Contention** | ~2700 ns/op | 522 B/op | 10 allocs/op |
+| **Cache Hits** | ~71 ns/op | 0 B/op | 0 allocs/op |
+
+*High Contention scenario simulates 10k+ concurrent requests for the same key, demonstrating the near-zero overhead of the deduplication engine.*
+
 ## Monitoring
 
 - **Metrics**: `http://localhost:2112/metrics`

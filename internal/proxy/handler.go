@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"net"
 
 	"github.com/VarunGitGood/collapser-grpc/internal/collapser"
 	"google.golang.org/grpc"
@@ -17,11 +18,16 @@ type Handler struct {
 	collapser   *collapser.Collapser
 }
 
-func NewHandler(backendAddr string, c *collapser.Collapser) *Handler {
+func NewHandler(c *collapser.Collapser, backendAddr string) *Handler {
 	return &Handler{
 		backendAddr: backendAddr,
 		collapser:   c,
 	}
+}
+
+func (h *Handler) Serve(lis net.Listener) error {
+	s := grpc.NewServer(grpc.UnknownServiceHandler(h.Handle))
+	return s.Serve(lis)
 }
 
 func (h *Handler) Handle(srv interface{}, stream grpc.ServerStream) error {
