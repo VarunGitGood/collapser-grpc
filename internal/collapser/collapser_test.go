@@ -10,7 +10,11 @@ import (
 )
 
 func TestCollapser_BasicCollapse(t *testing.T) {
-	c := NewCollapser()
+	c := NewCollapser(Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	})
 	c.Start()
 	defer c.Stop()
 
@@ -46,7 +50,7 @@ func TestCollapser_BasicCollapse(t *testing.T) {
 }
 
 func TestCollapser_CacheHit(t *testing.T) {
-	c := NewCollapserWithConfig(Config{
+	c := NewCollapser(Config{
 		ResultCacheDuration: 200 * time.Millisecond,
 		BackendTimeout:      5 * time.Second,
 		CleanupInterval:     1 * time.Second,
@@ -81,7 +85,7 @@ func TestCollapser_CacheHit(t *testing.T) {
 }
 
 func TestCollapser_CacheExpiry(t *testing.T) {
-	c := NewCollapserWithConfig(Config{
+	c := NewCollapser(Config{
 		ResultCacheDuration: 50 * time.Millisecond,
 		BackendTimeout:      5 * time.Second,
 		CleanupInterval:     10 * time.Millisecond,
@@ -110,7 +114,11 @@ func TestCollapser_CacheExpiry(t *testing.T) {
 }
 
 func TestCollapser_ClientCancellation(t *testing.T) {
-	c := NewCollapser()
+	c := NewCollapser(Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	})
 	c.Start()
 	defer c.Stop()
 
@@ -162,7 +170,11 @@ func TestCollapser_ClientCancellation(t *testing.T) {
 }
 
 func TestCollapser_ErrorPropagation(t *testing.T) {
-	c := NewCollapser()
+	c := NewCollapser(Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	})
 	c.Start()
 	defer c.Stop()
 
@@ -188,13 +200,18 @@ func TestCollapser_ErrorPropagation(t *testing.T) {
 }
 
 func TestCollapser_MultipleKeys(t *testing.T) {
-	c := NewCollapser()
+	c := NewCollapser(Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	})
 	c.Start()
 	defer c.Stop()
 
 	var backendCalls int64
 	fn := func(ctx context.Context) ([]byte, error) {
 		atomic.AddInt64(&backendCalls, 1)
+		time.Sleep(50 * time.Millisecond)
 		return []byte("result"), nil
 	}
 

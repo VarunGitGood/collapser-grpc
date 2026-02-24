@@ -1,4 +1,4 @@
-package prometheus
+package monitoring
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
@@ -13,22 +13,22 @@ var (
 
 	CollapsedRequestsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "collapser_collapsed_requests_total",
-		Help: "Total number of requests that were collapsed (joined inflight)",
+		Help: "Total number of requests that joined inflight",
 	})
 
 	BackendCallsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "collapser_backend_calls_total",
-		Help: "Total number of actual backend calls made",
+		Help: "Total backend calls made",
 	})
 
 	CacheHitsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "collapser_cache_hits_total",
-		Help: "Total number of cache hits",
+		Help: "Total cache hits",
 	})
 
 	InflightRequests = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "collapser_inflight_requests",
-		Help: "Current number of inflight request groups",
+		Help: "Current number of inflight requests",
 	})
 
 	CachedResults = promauto.NewGauge(prometheus.GaugeOpts{
@@ -38,7 +38,7 @@ var (
 
 	BackendLatency = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "collapser_backend_latency_seconds",
-		Help:    "Backend call latency in seconds",
+		Help:    "Backend backend call duration in seconds",
 		Buckets: prometheus.DefBuckets,
 	})
 )

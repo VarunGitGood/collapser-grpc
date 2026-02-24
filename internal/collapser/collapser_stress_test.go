@@ -10,7 +10,11 @@ import (
 )
 
 func TestStress_HighConcurrency(t *testing.T) {
-	c := NewCollapser()
+	c := NewCollapser(Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	})
 	c.Start()
 	defer c.Stop()
 
@@ -61,7 +65,11 @@ func TestStress_SustainedLoad(t *testing.T) {
 		t.Skip("Skipping sustained load test in short mode")
 	}
 
-	c := NewCollapser()
+	c := NewCollapser(Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	})
 	c.Start()
 	defer c.Stop()
 
@@ -122,7 +130,11 @@ func TestStress_MemoryLeak(t *testing.T) {
 	var m1 runtime.MemStats
 	runtime.ReadMemStats(&m1)
 
-	c := NewCollapser()
+	c := NewCollapser(Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	})
 	c.Start()
 	defer c.Stop()
 
@@ -173,7 +185,11 @@ func TestStress_GoroutineLeak(t *testing.T) {
 	runtime.GC()
 	before := runtime.NumGoroutine()
 
-	c := NewCollapser()
+	c := NewCollapser(Config{
+		ResultCacheDuration: 100 * time.Millisecond,
+		BackendTimeout:      10 * time.Second,
+		CleanupInterval:     1 * time.Second,
+	})
 	c.Start()
 
 	fn := func(ctx context.Context) ([]byte, error) {

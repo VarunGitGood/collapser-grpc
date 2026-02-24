@@ -37,6 +37,7 @@ func (h *Handler) Handle(srv interface{}, stream grpc.ServerStream) error {
 		}
 		return err
 	}
+
 	key := h.generateKey(method, in.Data)
 	resp, err := h.collapser.Execute(stream.Context(), key, func(ctx context.Context) ([]byte, error) {
 		return Forward(ctx, h.backendAddr, method, in.Data)

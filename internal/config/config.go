@@ -1,55 +1,57 @@
 package config
 
 import (
-	"os"
-	"strconv"
+	"fmt"
 	"time"
+
+	"github.com/kelseyhightower/envconfig"
 )
 
 type Config struct {
-	// GRPCPort is the port on which the gRPC server will listen.
-	GRPCPort string
+	// Server
+	GRPCPort    int `envconfig:"GRPC_PORT" default:"50052"`
+	MetricsPort int `envconfig:"METRICS_PORT" default:"2112"`
 
-	// BackendAddress is the address of the backend service to which requests will be forwarded.
-	BackendAddress string
+	// Backend
+	BackendAddress string        `envconfig:"BACKEND_ADDRESS" required:"true"`
+	BackendTimeout time.Duration `envconfig:"BACKEND_TIMEOUT" default:"10s"`
+	BackendUseTLS  bool          `envconfig:"BACKEND_USE_TLS" default:"false"`
 
-	// CollapseWindow defines the time window for collapsing requests.
-	CollapseWindow time.Duration
+	// Collapser
+	ResultCacheDuration time.Duration `envconfig:"COLLAPSER_CACHE_DURATION" default:"100ms"`
+	CleanupInterval     time.Duration `envconfig:"COLLAPSER_CLEANUP_INTERVAL" default:"1s"`
 
-	// MaxBatchSize defines the maximum number of requests to collapse into a single backend request.
-	MaxBatchSize int
+	// Logging
+	LogLevel  string `envconfig:"LOG_LEVEL" default:"info"`
+	LogFormat string `envconfig:"LOG_FORMAT" default:"json"`
 }
 
-func Load() *Config {
-	return &Config{
-		GRPCPort:       getEnv("GRPC_PORT", "50051"),
-		BackendAddress: getEnv("BACKEND_ADDRESS", "localhost:8080"),
-		CollapseWindow: getEnvAsDuration("COLLAPSE_WINDOW", 100*time.Millisecond),
-		MaxBatchSize:   getEnvAsInt("MAX_BATCH_SIZE", 50),
+func Load() (*Config, error) {
+	var cfg Config
+	err := envconfig.Process("", &cfg)
+	if err != nil {
+		return nil, err
 	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
 }
 
-func getEnv(key string, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
+func (c *Config) Validate() error {
+	if c.GRPCPort < 1 || c.GRPCPort > 65535 {
+		return fmt.Errorf("invalid GRPC_PORT: %d", c.GRPCPort)
 	}
-	return defaultValue
-}
-
-func getEnvAsInt(name string, defaultVal int) int {
-	if valueStr, exists := os.LookupEnv(name); exists {
-		if value, err := strconv.Atoi(valueStr); err == nil {
-			return value
-		}
+	if c.MetricsPort < 1 || c.MetricsPort > 65535 {
+		return fmt.Errorf("invalid METRICS_PORT: %d", c.MetricsPort)
 	}
-	return defaultVal
-}
-
-func getEnvAsDuration(name string, defaultVal time.Duration) time.Duration {
-	if valueStr, exists := os.LookupEnv(name); exists {
-		if value, err := time.ParseDuration(valueStr); err == nil {
-			return value
-		}
+	if c.BackendAddress == "" {
+		return fmt.Errorf("BACKEND_ADDRESS cannot be empty")
 	}
-	return defaultVal
+	if c.BackendTimeout <= 0 {
+		return fmt.Errorf("BACKEND_TIMEOUT must be positive")
+	}
+	return nil
 }
